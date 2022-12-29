@@ -5,6 +5,7 @@
 #include "LibretroKeyManager.h"
 #include "LibretroMessageManager.h"
 #include "libretro.h"
+#include "libretro_core_options.h"
 #include "../Core/Console.h"
 #include "../Core/VideoDecoder.h"
 #include "../Core/VideoRenderer.h"
@@ -41,7 +42,7 @@
 #define DEVICE_FOURPLAYERADAPTER  RETRO_DEVICE_SUBCLASS(RETRO_DEVICE_NONE, 2)
 
 static retro_log_printf_t logCallback = nullptr;
-retro_environment_t env_cb = nullptr;
+retro_environment_t environ_cb = nullptr;
 static unsigned _inputDevices[5] = { DEVICE_AUTO, DEVICE_AUTO, DEVICE_AUTO, DEVICE_AUTO, DEVICE_AUTO };
 static bool _hdPacksEnabled = false;
 static string _mesenVersion = "";
@@ -49,37 +50,53 @@ static int32_t _saveStateSize = -1;
 static bool _shiftButtonsClockwise = false;
 static int32_t _audioSampleRate = 48000;
 
+bool fps_mode_update = false;
+
+double brightness = 0;
+double contrast = 0;
+double hue = 0;
+double saturation = 0;
+double scanlines = 0;
+
+double ntsc_artifacts = 0;
+double ntsc_bleed = 0;
+double ntsc_fringing = 0;
+double ntsc_gamma = 0;
+double ntsc_resolution = 0;
+double ntsc_sharpness = 0;
+double ntsc_yFilterLength = 0;
+double ntsc_iFilterLength = 0;
+double ntsc_qFilterLength = 0;
+
+double print_fps = 0;
+double print_sample_rate = 0;
+
+enum filter_mode {
+	FILTER_RAW_PALETTE,
+	FILTER_NTSC_COMPOSITE_BLARGG,
+	FILTER_NTSC_SVIDEO_BLARGG,
+	FILTER_NTSC_RGB_BLARGG,
+	FILTER_NTSC_MONOCHROME_BLARGG,
+	FILTER_NTSC_BISQWIT_2X,
+	FILTER_NTSC_BISQWIT_4X,
+	FILTER_NTSC_BISQWIT_8X,
+	FILTER_NTSC_CUSTOM_BLARGG,
+	FILTER_NTSC_CUSTOM_BISQWIT_2X,
+	FILTER_NTSC_CUSTOM_BISQWIT_4X,
+	FILTER_NTSC_CUSTOM_BISQWIT_8X,
+	FILTER_DISABLED
+};
+static filter_mode set_filter_mode = FILTER_DISABLED;
+
+bool categories_supported = false;
+bool updateDisplayCbSupported = false;
+
 //Include game database as a byte array (representing the MesenDB.txt file)
 #include "MesenDB.inc"
 
 static std::shared_ptr<Console> _console;
 static std::unique_ptr<LibretroKeyManager> _keyManager;
 static std::unique_ptr<LibretroMessageManager> _messageManager;
-
-static constexpr const char* MesenNtscFilter = "mesen_ntsc_filter";
-static constexpr const char* MesenPalette = "mesen_palette";
-static constexpr const char* MesenNoSpriteLimit = "mesen_nospritelimit";
-static constexpr const char* MesenOverclock = "mesen_overclock";
-static constexpr const char* MesenOverclockType = "mesen_overclock_type";
-static constexpr const char* MesenOverscanLeft = "mesen_overscan_left";
-static constexpr const char* MesenOverscanRight = "mesen_overscan_right";
-static constexpr const char* MesenOverscanTop = "mesen_overscan_up";
-static constexpr const char* MesenOverscanBottom = "mesen_overscan_down";
-static constexpr const char* MesenAspectRatio = "mesen_aspect_ratio";
-static constexpr const char* MesenRegion = "mesen_region";
-static constexpr const char* MesenRamState = "mesen_ramstate";
-static constexpr const char* MesenControllerTurboSpeed = "mesen_controllerturbospeed";
-static constexpr const char* MesenFdsAutoSelectDisk = "mesen_fdsautoinsertdisk";
-static constexpr const char* MesenFdsFastForwardLoad = "mesen_fdsfastforwardload";
-static constexpr const char* MesenHdPacks = "mesen_hdpacks";
-static constexpr const char* MesenScreenRotation = "mesen_screenrotation";
-static constexpr const char* MesenFakeStereo = "mesen_fake_stereo";
-static constexpr const char* MesenMuteTriangleUltrasonic = "mesen_mute_triangle_ultrasonic";
-static constexpr const char* MesenReduceDmcPopping = "mesen_reduce_dmc_popping";
-static constexpr const char* MesenSwapDutyCycle = "mesen_swap_duty_cycle";
-static constexpr const char* MesenDisableNoiseModeFlag = "mesen_disable_noise_mode_flag";
-static constexpr const char* MesenShiftButtonsClockwise = "mesen_shift_buttons_clockwise";
-static constexpr const char* MesenAudioSampleRate = "mesen_audio_sample_rate";
 
 uint32_t defaultPalette[0x40] { 0xFF666666, 0xFF002A88, 0xFF1412A7, 0xFF3B00A4, 0xFF5C007E, 0xFF6E0040, 0xFF6C0600, 0xFF561D00, 0xFF333500, 0xFF0B4800, 0xFF005200, 0xFF004F08, 0xFF00404D, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFADADAD, 0xFF155FD9, 0xFF4240FF, 0xFF7527FE, 0xFFA01ACC, 0xFFB71E7B, 0xFFB53120, 0xFF994E00, 0xFF6B6D00, 0xFF388700, 0xFF0C9300, 0xFF008F32, 0xFF007C8D, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFEFF, 0xFF64B0FF, 0xFF9290FF, 0xFFC676FF, 0xFFF36AFF, 0xFFFE6ECC, 0xFFFE8170, 0xFFEA9E22, 0xFFBCBE00, 0xFF88D800, 0xFF5CE430, 0xFF45E082, 0xFF48CDDE, 0xFF4F4F4F, 0xFF000000, 0xFF000000, 0xFFFFFEFF, 0xFFC0DFFF, 0xFFD3D2FF, 0xFFE8C8FF, 0xFFFBC2FF, 0xFFFEC4EA, 0xFFFECCC5, 0xFFF7D8A5, 0xFFE4E594, 0xFFCFEF96, 0xFFBDF4AB, 0xFFB3F3CC, 0xFFB5EBF2, 0xFFB8B8B8, 0xFF000000, 0xFF000000 };
 uint32_t unsaturatedPalette[0x40] { 0xFF6B6B6B, 0xFF001E87, 0xFF1F0B96, 0xFF3B0C87, 0xFF590D61, 0xFF5E0528, 0xFF551100, 0xFF461B00, 0xFF303200, 0xFF0A4800, 0xFF004E00, 0xFF004619, 0xFF003A58, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFB2B2B2, 0xFF1A53D1, 0xFF4835EE, 0xFF7123EC, 0xFF9A1EB7, 0xFFA51E62, 0xFFA52D19, 0xFF874B00, 0xFF676900, 0xFF298400, 0xFF038B00, 0xFF008240, 0xFF007891, 0xFF000000, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFF63ADFD, 0xFF908AFE, 0xFFB977FC, 0xFFE771FE, 0xFFF76FC9, 0xFFF5836A, 0xFFDD9C29, 0xFFBDB807, 0xFF84D107, 0xFF5BDC3B, 0xFF48D77D, 0xFF48CCCE, 0xFF555555, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFFC4E3FE, 0xFFD7D5FE, 0xFFE6CDFE, 0xFFF9CAFE, 0xFFFEC9F0, 0xFFFED1C7, 0xFFF7DCAC, 0xFFE8E89C, 0xFFD1F29D, 0xFFBFF4B1, 0xFFB7F5CD, 0xFFB7F0EE, 0xFFBEBEBE, 0xFF000000, 0xFF000000 };
@@ -108,16 +125,16 @@ extern "C" {
 	RETRO_API void retro_init()
 	{
 		struct retro_log_callback log;
-		if(env_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
+		if(environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log))
 			logCallback = log.log;
 		else
 			logCallback = nullptr;
 
 		_console.reset(new Console());
-		_console->Init(env_cb);
+		_console->Init(environ_cb);
 
 		_keyManager.reset(new LibretroKeyManager(_console));
-		_messageManager.reset(new LibretroMessageManager(logCallback, env_cb));
+		_messageManager.reset(new LibretroMessageManager(logCallback, environ_cb));
 
 		std::stringstream databaseData;
 		databaseData.write((const char*)MesenDatabase, sizeof(MesenDatabase));
@@ -127,7 +144,7 @@ extern "C" {
 		_console->GetSettings()->SetFlags(EmulationFlags::AutoConfigureInput);
 		_console->GetSettings()->SetSampleRate(_audioSampleRate);
 
-		if (env_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
+		if (environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL))
 			_keyManager->SetSupportsInputBitmasks(true);
 	}
 
@@ -142,37 +159,188 @@ extern "C" {
 		_console.reset();
 	}
 
-	RETRO_API void retro_set_environment(retro_environment_t env)
+	static bool set_variable_visibility(void)
 	{
-		env_cb = env;
+		/* Define the options that will be hidden dynamically */
+		struct retro_core_option_display option_display_image_preset;
+		struct retro_core_option_display option_display_image_values;
+		struct retro_core_option_display option_display_filters;
+		struct retro_core_option_display option_display_ntsc_common_values;
+		struct retro_core_option_display option_display_ntsc_default_blargg_values;
+		struct retro_core_option_display option_display_ntsc_custom_blargg_values;
+		struct retro_core_option_display option_display_ntsc_custom_bisqwit_values;
+		struct retro_core_option_display option_display_overclock_type;
 
-		static constexpr struct retro_variable vars[] = {
-			{ MesenNtscFilter, "NTSC filter; Disabled|Composite (Blargg)|S-Video (Blargg)|RGB (Blargg)|Monochrome (Blargg)|Bisqwit 2x|Bisqwit 4x|Bisqwit 8x" },
-			{ MesenPalette, "Palette; Default|Composite Direct (by FirebrandX)|Nes Classic|Nestopia (RGB)|Original Hardware (by FirebrandX)|PVM Style (by FirebrandX)|Sony CXA2025AS|Unsaturated v6 (by FirebrandX)|YUV v3 (by FirebrandX)|Wavebeam (by nakedarthur)|Custom|Raw" },
-			{ MesenOverclock, "Overclock; None|Low|Medium|High|Very High" },
-			{ MesenOverclockType, "Overclock Type; Before NMI (Recommended)|After NMI" },
-			{ MesenRegion, "Region; Auto|NTSC|PAL|Dendy" },
-			{ MesenOverscanLeft, "Left Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanRight, "Right Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanTop, "Top Overscan; None|4px|8px|12px|16px" },
-			{ MesenOverscanBottom, "Bottom Overscan; None|4px|8px|12px|16px" },
-			{ MesenAspectRatio, "Aspect Ratio; Auto|No Stretching|NTSC|PAL|4:3|4:3 (Preserved)|16:9|16:9 (Preserved)" },
-			{ MesenControllerTurboSpeed, "Controller Turbo Speed; Fast|Very Fast|Disabled|Slow|Normal" },
-			{ MesenShiftButtonsClockwise, u8"Shift A/B/X/Y clockwise; disabled|enabled" },
-			{ MesenHdPacks, "Enable HD Packs; enabled|disabled" },
-			{ MesenNoSpriteLimit, "Remove sprite limit; disabled|enabled" },
-			{ MesenFakeStereo, u8"Enable fake stereo effect; disabled|enabled" },
-			{ MesenMuteTriangleUltrasonic, u8"Reduce popping on Triangle channel; enabled|disabled" },
-			{ MesenReduceDmcPopping, u8"Reduce popping on DMC channel; enabled|disabled" },
-			{ MesenSwapDutyCycle, u8"Swap Square channel duty cycles; disabled|enabled" },
-			{ MesenDisableNoiseModeFlag, u8"Disable Noise channel mode flag; disabled|enabled" },
-			{ MesenScreenRotation, u8"Screen Rotation; None|90 degrees|180 degrees|270 degrees" },
-			{ MesenRamState, "Default power-on state for RAM; All 0s (Default)|All 1s|Random Values" },
-			{ MesenFdsAutoSelectDisk, "FDS: Automatically insert disks; disabled|enabled" },
-			{ MesenFdsFastForwardLoad, "FDS: Fast forward while loading; disabled|enabled" },
-			{ MesenAudioSampleRate, "Sound Output Sample Rate; 48000|96000|11025|22050|44100" },
-			{ NULL, NULL },
-		};
+		bool ntsc_merge_fields_custom = false;
+
+		size_t i;
+		size_t num_options = 0;
+		struct retro_variable var;
+
+		/* Show all options if the update display callback is not supported */
+		if (!updateDisplayCbSupported)
+			return false;
+
+		/* Set the conditions for showing/hiding the desired options */
+		var.key = "mesen_palette";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+		{
+			if (strcmp(var.value, "Raw") == 0)
+			{
+				option_display_image_preset.visible = false;
+				option_display_image_values.visible = false;
+				option_display_filters.visible = false;
+				option_display_ntsc_default_blargg_values.visible = false;
+				option_display_ntsc_custom_blargg_values.visible = false;
+				option_display_ntsc_custom_bisqwit_values.visible = false;
+				option_display_ntsc_common_values.visible = false;
+			}
+			else
+			{
+				option_display_image_preset.visible = true;
+				option_display_filters.visible = true;
+
+				option_display_image_values.visible = false;
+				var.key = "mesen_image";
+				var.value = NULL;
+				if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+				{
+					if (strcmp(var.value, "Custom") == 0)
+						option_display_image_values.visible = true;
+				}
+
+				option_display_ntsc_default_blargg_values.visible = false;
+				option_display_ntsc_custom_blargg_values.visible = false;
+				option_display_ntsc_custom_bisqwit_values.visible = false;
+				option_display_ntsc_common_values.visible = false;
+				var.key = "mesen_ntsc_filter";
+				var.value = NULL;
+				if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+				{
+					if (!strcmp(var.value, "Disabled") == 0)
+						option_display_ntsc_common_values.visible = true;
+
+					if ((strcmp(var.value, "Composite (Blargg)") == 0)	||
+						(strcmp(var.value, "S-Video (Blargg)") == 0)	||
+						(strcmp(var.value, "RGB (Blargg)") == 0)		||
+						(strcmp(var.value, "Monochrome (Blargg)") == 0))
+						option_display_ntsc_default_blargg_values.visible = true;
+
+					if (strcmp(var.value, "Custom (Blargg)") == 0)
+					{
+						ntsc_merge_fields_custom = true;
+						option_display_ntsc_custom_blargg_values.visible = true;
+					}
+					else if((strcmp(var.value, "Custom (Bisqwit 2x)") == 0)		||
+							(strcmp(var.value, "Custom (Bisqwit 4x)") == 0)		||
+							(strcmp(var.value, "Custom (Bisqwit 8x)") == 0))
+					{
+						ntsc_merge_fields_custom = true;
+						option_display_ntsc_custom_bisqwit_values.visible = true;
+					}
+				}
+			}
+		}
+
+		option_display_overclock_type.visible = false;
+		var.key = "mesen_overclock";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+		{
+			if (!strcmp(var.value, "None") == 0)
+				option_display_overclock_type.visible = true;
+		}
+
+		/* Determine number of options */
+		for (;;)
+		{
+			if (!option_defs_us[num_options].key)
+				break;
+			num_options++;
+		}
+
+		/* Copy parameters from option_defs_us array */
+		for (i = 0; i < num_options; i++)
+		{
+			const char *key  = option_defs_us[i].key;
+
+				/* Assign the options that need to be hidden dynamically to their respective type */
+				if (strcmp (key, "mesen_image") == 0)
+				{
+					option_display_image_preset.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_image_preset);
+				}
+
+				if ((strcmp(key, "mesen_brightness") == 0)			||
+					(strcmp(key, "mesen_contrast") == 0)			||
+					(strcmp(key, "mesen_saturation") == 0)			||
+					(strcmp(key, "mesen_hue") == 0)					||
+					(strcmp(key, "mesen_scanlines") == 0))
+				{
+					option_display_image_values.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_image_values);
+				}
+
+				if (strcmp(key, "mesen_ntsc_filter") == 0)
+				{
+					option_display_filters.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_filters);
+				}
+
+				if ((strcmp(key, "mesen_ntsc_merge_fields") == 0) && (!ntsc_merge_fields_custom))
+				{
+					option_display_ntsc_default_blargg_values.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_ntsc_default_blargg_values);
+				}
+
+				if ((strcmp(key, "mesen_ntsc_artifacts") == 0)		||
+					(strcmp(key, "mesen_ntsc_bleed") == 0)			||
+					(strcmp(key, "mesen_ntsc_fringing") == 0)		||
+					(strcmp(key, "mesen_ntsc_gamma") == 0)			||
+					(strcmp(key, "mesen_ntsc_resolution") == 0)		||
+					(strcmp(key, "mesen_ntsc_sharpness") == 0)		||
+					((strcmp(key, "mesen_ntsc_merge_fields") == 0) && (ntsc_merge_fields_custom)))
+				{
+					option_display_ntsc_custom_blargg_values.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_ntsc_custom_blargg_values);
+				}
+
+				if ((strcmp(key, "mesen_ntsc_yFilterLength") == 0)	||
+					(strcmp(key, "mesen_ntsc_iFilterLength") == 0)	||
+					(strcmp(key, "mesen_ntsc_qFilterLength") == 0))
+				{
+					option_display_ntsc_custom_bisqwit_values.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_ntsc_custom_bisqwit_values);
+				}
+
+				if (strcmp(key, "mesen_ntsc_vertical_blend") == 0)
+				{
+					option_display_ntsc_common_values.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_ntsc_common_values);
+				}
+
+				if (strcmp(key, "mesen_overclock_type") == 0)
+				{
+					option_display_overclock_type.key = key;
+					environ_cb(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY, &option_display_overclock_type);
+				}
+		}
+
+		return true;
+	}
+
+	RETRO_API void retro_set_environment(retro_environment_t cb)
+	{
+		environ_cb = cb;
+
+		libretro_set_core_options(environ_cb, &categories_supported);
+
+		struct retro_core_options_update_display_callback updateDisplayCb;
+		updateDisplayCb.callback = set_variable_visibility;
+		updateDisplayCbSupported = environ_cb(
+			RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK,
+			&updateDisplayCb);
 
 		static constexpr struct retro_controller_description pads1[] = {
 			{ "Auto", DEVICE_AUTO },
@@ -209,7 +377,7 @@ extern "C" {
 			{ "Standard Controller", DEVICE_GAMEPAD },
 			{ NULL, 0 },
 		};
-		
+
 		static constexpr struct retro_controller_description pads5[] = {
 			{ "Auto",     RETRO_DEVICE_JOYPAD },
 			{ "Arkanoid", DEVICE_ARKANOID },
@@ -223,10 +391,10 @@ extern "C" {
 			{ "Konami Hypershot", DEVICE_KONAMIHYPERSHOT },
 			{ "Pachinko", DEVICE_PACHINKO },
 			{ "Partytap", DEVICE_PARTYTAP },
-			{ "Oeka Kids Tablet", DEVICE_OEKAKIDS },			
+			{ "Oeka Kids Tablet", DEVICE_OEKAKIDS },
 			{ NULL, 0 },
 		};
-		
+
 		static constexpr struct retro_controller_info ports[] = {
 			{ pads1, 7 },
 			{ pads2, 7 },
@@ -245,9 +413,8 @@ extern "C" {
 			{ NULL, false, false }
 		};
 
-		env_cb(RETRO_ENVIRONMENT_SET_VARIABLES, (void*)vars);
-		env_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
-		env_cb(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void*)content_overrides);
+		environ_cb(RETRO_ENVIRONMENT_SET_CONTROLLER_INFO, (void*)ports);
+		environ_cb(RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE, (void*)content_overrides);
 	}
 
 	RETRO_API void retro_set_video_refresh(retro_video_refresh_t sendFrame)
@@ -265,7 +432,7 @@ extern "C" {
 	}
 
 	RETRO_API void retro_set_input_poll(retro_input_poll_t pollInput)
-	{	
+	{
 		_keyManager->SetPollInput(pollInput);
 	}
 
@@ -277,46 +444,6 @@ extern "C" {
 	RETRO_API void retro_reset()
 	{
 		_console->Reset(true);
-	}
-
-	bool readVariable(const char* key, retro_variable &var)
-	{
-		var.key = key;
-		var.value = nullptr;
-		if(env_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value != nullptr)
-			return true;
-		return false;
-	}
-
-	uint8_t readOverscanValue(const char* key)
-	{
-		retro_variable var = {};
-		if(readVariable(key, var)) {
-			string value = string(var.value);
-			if(value == "4px") {
-				return 4;
-			} else if(value == "8px") {
-				return 8;
-			} else if(value == "12px") {
-				return 12;
-			} else if(value == "16px") {
-				return 16;
-			}
-		}
-		return 0;
-	}
-
-	void set_flag(const char* flagName, uint64_t flagValue)
-	{
-		struct retro_variable var = {};
-		if(readVariable(flagName, var)) {
-			string value = string(var.value);
-			if(value == "disabled") {
-				_console->GetSettings()->ClearFlags(flagValue);
-			} else {
-				_console->GetSettings()->SetFlags(flagValue);
-			}
-		}
 	}
 
 	void load_custom_palette()
@@ -343,230 +470,622 @@ extern "C" {
 		}
 	}
 
+	void update_fps_mode()
+	{
+		retro_system_av_info avInfo = {};
+		_console->GetVideoRenderer()->GetSystemAudioVideoInfo(avInfo);
+		environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &avInfo);
+		fps_mode_update = false;
+	}
+
 	void update_settings()
 	{
 		struct retro_variable var = { };
 		_console->GetSettings()->SetPictureSettings(0, 0, 0, 0, 0);
-
 		_hdPacksEnabled = _console->GetSettings()->CheckFlag(EmulationFlags::UseHdPacks);
 
-		set_flag(MesenNoSpriteLimit, EmulationFlags::RemoveSpriteLimit | EmulationFlags::AdaptiveSpriteLimit);
-		set_flag(MesenHdPacks, EmulationFlags::UseHdPacks);
-		set_flag(MesenMuteTriangleUltrasonic, EmulationFlags::SilenceTriangleHighFreq);
-		set_flag(MesenReduceDmcPopping, EmulationFlags::ReduceDmcPopping);
-		set_flag(MesenSwapDutyCycle, EmulationFlags::SwapDutyCycles);
-		set_flag(MesenDisableNoiseModeFlag, EmulationFlags::DisableNoiseModeFlag);
-		set_flag(MesenFdsAutoSelectDisk, EmulationFlags::FdsAutoInsertDisk);
-		set_flag(MesenFdsFastForwardLoad, EmulationFlags::FdsFastForwardOnLoad);
+		/* System */
 
-		if(readVariable(MesenFakeStereo, var)) {
-			string value = string(var.value);
-			AudioFilterSettings settings;
-			if(value == "enabled") {
-				settings.Filter = StereoFilter::Delay;
-				settings.Delay = 15;
-				_console->GetSettings()->SetAudioFilterSettings(settings);
-			} else {
-				_console->GetSettings()->SetAudioFilterSettings(settings);
-			}
-		}
-		
-		if(readVariable(MesenNtscFilter, var)) {
-			string value = string(var.value);
-			if(value == "Disabled") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::None);
-			} else if(value == "Composite (Blargg)") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
-				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "S-Video (Blargg)") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
-				_console->GetSettings()->SetNtscFilterSettings(-1.0, 0, -1.0, 0, 0.2, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "RGB (Blargg)") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
-				_console->GetSettings()->SetPictureSettings(0, 0, 0, 0, 0);
-				_console->GetSettings()->SetNtscFilterSettings(-1.0, -1.0, -1.0, 0, 0.7, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "Monochrome (Blargg)") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
-				_console->GetSettings()->SetPictureSettings(0, 0, -1.0, 0, 0);
-				_console->GetSettings()->SetNtscFilterSettings(-0.2, -0.1, -0.2, 0, 0.7, 0.2, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 2x") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscQuarterRes);
-				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 4x") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscHalfRes);
-				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			} else if(value == "Bisqwit 8x") {
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtsc);
-				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, true);
-			}
+		var.key = "mesen_region";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "Auto") == 0)
+				_console->GetSettings()->SetNesModel(NesModel::Auto);
+			else if (strcmp (var.value, "NTSC") == 0)
+				_console->GetSettings()->SetNesModel(NesModel::NTSC);
+			else if (strcmp (var.value, "PAL") == 0)
+				_console->GetSettings()->SetNesModel(NesModel::PAL);
+			else if (strcmp (var.value, "Dendy") == 0)
+				_console->GetSettings()->SetNesModel(NesModel::Dendy);
 		}
 
-		if(readVariable(MesenPalette, var)) {
-			string value = string(var.value);
-			if(value == "Default") {
-				_console->GetSettings()->SetUserRgbPalette(defaultPalette);
-			} else if(value == "Composite Direct (by FirebrandX)") {
-				_console->GetSettings()->SetUserRgbPalette(compositeDirectPalette);
-			} else if(value == "Nes Classic") {
-				_console->GetSettings()->SetUserRgbPalette(nesClassicPalette);
-			} else if(value == "Nestopia (RGB)") {
-				_console->GetSettings()->SetUserRgbPalette(nestopiaRgbPalette);
-			} else if(value == "Original Hardware (by FirebrandX)") {
-				_console->GetSettings()->SetUserRgbPalette(originalHardwarePalette);
-			} else if(value == "PVM Style (by FirebrandX)") {
-				_console->GetSettings()->SetUserRgbPalette(pvmStylePalette);
-			} else if(value == "Sony CXA2025AS") {
-				_console->GetSettings()->SetUserRgbPalette(sonyCxa2025AsPalette);
-			} else if(value == "Unsaturated v6 (by FirebrandX)") {
-				_console->GetSettings()->SetUserRgbPalette(unsaturatedPalette);
-			} else if(value == "YUV v3 (by FirebrandX)") {
-				_console->GetSettings()->SetUserRgbPalette(yuvPalette);
-			} else if(value == "Wavebeam (by nakedarthur)") {
-				_console->GetSettings()->SetUserRgbPalette(wavebeamPalette);
-			} else if(value == "Custom") {
-				load_custom_palette();
-			} else if(value == "Raw") {
-				//Using the raw palette replaces the NTSC filters, if one is selected
-				_console->GetSettings()->SetVideoFilterType(VideoFilterType::Raw);
-			}
+		var.key = "mesen_fdsautoinsertdisk";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::FdsAutoInsertDisk);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::FdsAutoInsertDisk);
 		}
 
-		bool beforeNmi = true;
-		if(readVariable(MesenOverclockType, var)) {
-			string value = string(var.value);
-			if(value == "After NMI") {
-				beforeNmi = false;
-			}
+		var.key = "mesen_fdsfastforwardload";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::FdsFastForwardOnLoad);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::FdsFastForwardOnLoad);
 		}
 
-		if(readVariable(MesenOverclock, var)) {
-			string value = string(var.value);
-			int lineCount = 0;
-			if(value == "None") {
-				lineCount = 0;
-			} else if(value == "Low") {
-				lineCount = 100;
-			} else if(value == "Medium") {
-				lineCount = 250;
-			} else if(value == "High") {
-				lineCount = 500;
-			} else if(value == "Very High") {
-				lineCount = 1000;
-			}
+		/* Video - General */
 
-			if(beforeNmi) {
-				_console->GetSettings()->SetPpuNmiConfig(lineCount, 0);
-			} else {
-				_console->GetSettings()->SetPpuNmiConfig(0, lineCount);
-			}
+		var.key = "mesen_aspect_ratio";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "Auto") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Auto, 1.0);
+			else if (strcmp (var.value, "NTSC") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NTSC, 1.0);
+			else if (strcmp (var.value, "PAL") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::PAL, 1.0);
+			else if (strcmp (var.value, "4:3") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::StandardS, 1.0);
+			else if (strcmp (var.value, "4:3 (Preserved)") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Standard, 1.0);
+			else if (strcmp (var.value, "16:9") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::WidescreenS, 1.0);
+			else if (strcmp (var.value, "16:9 (Preserved)") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Widescreen, 1.0);
+			else if (strcmp (var.value, "No Stretching") == 0)
+				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NoStretching, 1.0);
+		}
+
+		int overscan_top = 0;
+		int overscan_bottom = 0;
+		int overscan_left = 0;
+		int overscan_right = 0;
+
+		var.key = "mesen_overscan_up";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "4px") == 0)
+				overscan_top = 4;
+			else if (strcmp (var.value, "8px") == 0)
+				overscan_top = 8;
+			else if (strcmp (var.value, "12px") == 0)
+				overscan_top = 12;
+			else if (strcmp (var.value, "16px") == 0)
+				overscan_top = 16;
+		}
+
+		var.key = "mesen_overscan_down";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "4px") == 0)
+				overscan_bottom = 4;
+			else if (strcmp (var.value, "8px") == 0)
+				overscan_bottom = 8;
+			else if (strcmp (var.value, "12px") == 0)
+				overscan_bottom = 12;
+			else if (strcmp (var.value, "16px") == 0)
+				overscan_bottom = 16;
+		}
+
+		var.key = "mesen_overscan_left";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "4px") == 0)
+				overscan_left = 4;
+			else if (strcmp (var.value, "8px") == 0)
+				overscan_left = 8;
+			else if (strcmp (var.value, "12px") == 0)
+				overscan_left = 12;
+			else if (strcmp (var.value, "16px") == 0)
+				overscan_left = 16;
+		}
+
+		var.key = "mesen_overscan_right";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "4px") == 0)
+				overscan_right = 4;
+			else if (strcmp (var.value, "8px") == 0)
+				overscan_right = 8;
+			else if (strcmp (var.value, "12px") == 0)
+				overscan_right = 12;
+			else if (strcmp (var.value, "16px") == 0)
+				overscan_right = 16;
 		}
 
 		_console->GetSettings()->SetOverscanDimensions(
-			readOverscanValue(MesenOverscanLeft),
-			readOverscanValue(MesenOverscanRight),
-			readOverscanValue(MesenOverscanTop),
-			readOverscanValue(MesenOverscanBottom)
+			overscan_left,
+			overscan_right,
+			overscan_top,
+			overscan_bottom
 		);
 
-		if(readVariable(MesenAspectRatio, var)) {
-			string value = string(var.value);
-			if(value == "Auto") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Auto, 1.0);
-			} else if(value == "No Stretching") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NoStretching, 1.0);
-			} else if(value == "NTSC") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::NTSC, 1.0);
-			} else if(value == "PAL") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::PAL, 1.0);
-			} else if(value == "4:3") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::StandardS, 1.0);
-			} else if(value == "4:3 (Preserved)") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Standard, 1.0);
-			} else if(value == "16:9") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::WidescreenS, 1.0);
-			} else if(value == "16:9 (Preserved)") {
-				_console->GetSettings()->SetVideoAspectRatio(VideoAspectRatio::Widescreen, 1.0);
-			}
-		}
-
-		if(readVariable(MesenRegion, var)) {
-			string value = string(var.value);
-			if(value == "Auto") {
-				_console->GetSettings()->SetNesModel(NesModel::Auto);
-			} else if(value == "NTSC") {
-				_console->GetSettings()->SetNesModel(NesModel::NTSC);
-			} else if(value == "PAL") {
-				_console->GetSettings()->SetNesModel(NesModel::PAL);
-			} else if(value == "Dendy") {
-				_console->GetSettings()->SetNesModel(NesModel::Dendy);
-			}
-		}
-		
-		if(readVariable(MesenRamState, var)) {
-			string value = string(var.value);
-			if(value == "All 0s (Default)") {
-				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllZeros);
-			} else if(value == "All 1s") {
-				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllOnes);
-			} else if(value == "Random Values") {
-				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::Random);
-			}
-		}
-
-		if(readVariable(MesenScreenRotation, var)) {
-			string value = string(var.value);
-			if(value == "None") {
+		var.key = "mesen_screenrotation";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "None") == 0)
 				_console->GetSettings()->SetScreenRotation(0);
-			} else if(value == u8"90 degrees") {
+			else if (strcmp (var.value, "90 degrees") == 0)
 				_console->GetSettings()->SetScreenRotation(90);
-			} else if(value == u8"180 degrees") {
+			else if (strcmp (var.value, "180 degrees") == 0)
 				_console->GetSettings()->SetScreenRotation(180);
-			} else if(value == u8"270 degrees") {
+			else if (strcmp (var.value, "270 degrees") == 0)
 				_console->GetSettings()->SetScreenRotation(270);
+		}
+
+		var.key = "mesen_fps_mode";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			fps_mode newval_fps = FPS_MESEN;
+			if (strcmp(var.value, "fps_mesen") == 0)
+				newval_fps = FPS_MESEN;
+			else if (strcmp(var.value, "fps_fceumm") == 0)
+				newval_fps = FPS_FCEUMM;
+			else if (strcmp(var.value, "fps_integer") == 0)
+				newval_fps = FPS_INTEGER;
+
+			if (newval_fps != set_fps_mode)
+			{
+				set_fps_mode = newval_fps;
+				fps_mode_update = true;
 			}
 		}
 
-		int turboSpeed = 0;
-		bool turboEnabled = true;
-		if(readVariable(MesenControllerTurboSpeed, var)) {
-			string value = string(var.value);
-			if(value == "Slow") {
-				turboSpeed = 0;
-			} else if(value == "Normal") {
-				turboSpeed = 1;
-			} else if(value == "Fast") {
-				turboSpeed = 2;
-			} else if(value == "Very Fast") {
-				turboSpeed = 3;
-			} else if(value == "Disabled") {
-				turboEnabled = false;
+		var.key = "mesen_hdpacks";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::UseHdPacks);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::UseHdPacks);
+		}
+
+		/* Video - Image Adjustment */
+
+		bool filter_raw_palette = false;
+		var.key = "mesen_palette";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "Raw") == 0)
+				filter_raw_palette = true;
+			if (strcmp (var.value, "Default") == 0)
+				_console->GetSettings()->SetUserRgbPalette(defaultPalette);
+			else if (strcmp (var.value, "Composite Direct (by FirebrandX)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(compositeDirectPalette);
+			else if (strcmp (var.value, "Nes Classic") == 0)
+				_console->GetSettings()->SetUserRgbPalette(nesClassicPalette);
+			else if (strcmp (var.value, "Nestopia (RGB)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(nestopiaRgbPalette);
+			else if (strcmp (var.value, "Original Hardware (by FirebrandX)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(originalHardwarePalette);
+			else if (strcmp (var.value, "PVM Style (by FirebrandX)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(pvmStylePalette);
+			else if (strcmp (var.value, "Sony CXA2025AS") == 0)
+				_console->GetSettings()->SetUserRgbPalette(sonyCxa2025AsPalette);
+			else if (strcmp (var.value, "Unsaturated v6 (by FirebrandX)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(unsaturatedPalette);
+			else if (strcmp (var.value, "YUV v3 (by FirebrandX)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(yuvPalette);
+			else if (strcmp (var.value, "Wavebeam (by nakedarthur)") == 0)
+				_console->GetSettings()->SetUserRgbPalette(wavebeamPalette);
+			else if (strcmp (var.value, "Custom") == 0)
+				load_custom_palette();
+		}
+
+		bool image_preset_default = true;
+		var.key = "mesen_image";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "Custom") == 0)
+				image_preset_default = false;
+		}
+
+		var.key = "mesen_brightness";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			brightness = atof(var.value);
+
+		var.key = "mesen_contrast";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			contrast = atof(var.value);
+
+		var.key = "mesen_saturation";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			saturation = atof(var.value);
+
+		var.key = "mesen_hue";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			hue = atof(var.value);
+
+		var.key = "mesen_scanlines";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			scanlines = atof(var.value);
+
+		var.key = "mesen_ntsc_filter";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			filter_mode newval_filter = FILTER_DISABLED;
+			if (strcmp (var.value, "Composite (Blargg)") == 0)
+				newval_filter = FILTER_NTSC_COMPOSITE_BLARGG;
+			else if (strcmp (var.value, "S-Video (Blargg)") == 0)
+				newval_filter = FILTER_NTSC_SVIDEO_BLARGG;
+			else if (strcmp (var.value, "RGB (Blargg)") == 0)
+				newval_filter = FILTER_NTSC_RGB_BLARGG;
+			else if (strcmp (var.value, "Monochrome (Blargg)") == 0)
+				newval_filter = FILTER_NTSC_MONOCHROME_BLARGG;
+			else if (strcmp (var.value, "Bisqwit 2x") == 0)
+				newval_filter = FILTER_NTSC_BISQWIT_2X;
+			else if (strcmp (var.value, "Bisqwit 4x") == 0)
+				newval_filter = FILTER_NTSC_BISQWIT_4X;
+			else if (strcmp (var.value, "Bisqwit 8x") == 0)
+				newval_filter = FILTER_NTSC_BISQWIT_8X;
+			else if (strcmp (var.value, "Custom (Blargg)") == 0)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
+				newval_filter = FILTER_NTSC_CUSTOM_BLARGG;
+			}
+			else if (strcmp (var.value, "Custom (Bisqwit 2x)") == 0)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscQuarterRes);
+				newval_filter = FILTER_NTSC_CUSTOM_BISQWIT_2X;
+			}
+			else if (strcmp (var.value, "Custom (Bisqwit 4x)") == 0)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscHalfRes);
+				newval_filter = FILTER_NTSC_CUSTOM_BISQWIT_4X;
+			}
+			else if (strcmp (var.value, "Custom (Bisqwit 8x)") == 0)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtsc);
+				newval_filter = FILTER_NTSC_CUSTOM_BISQWIT_8X;
+			}
+			else if (strcmp (var.value, "Disabled") == 0)
+				newval_filter = FILTER_DISABLED;
+
+			if (newval_filter != set_filter_mode)
+				set_filter_mode = newval_filter;
+		}
+
+		var.key = "mesen_ntsc_artifacts";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_artifacts = atof(var.value);
+
+		var.key = "mesen_ntsc_bleed";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_bleed = atof(var.value);
+
+		var.key = "mesen_ntsc_fringing";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_fringing = atof(var.value);
+
+		var.key = "mesen_ntsc_gamma";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_gamma = atof(var.value);
+
+		var.key = "mesen_ntsc_resolution";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_resolution = atof(var.value);
+
+		var.key = "mesen_ntsc_sharpness";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_sharpness = atof(var.value);
+
+		bool ntsc_mergeFields = false;
+		var.key = "mesen_ntsc_merge_fields";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "enabled") == 0)
+				ntsc_mergeFields = true;
+		}
+
+		var.key = "mesen_ntsc_yFilterLength";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_yFilterLength = atof(var.value);
+
+		var.key = "mesen_ntsc_iFilterLength";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_iFilterLength = atof(var.value);
+
+		var.key = "mesen_ntsc_qFilterLength";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+			ntsc_qFilterLength = atof(var.value);
+
+		bool ntsc_verticalBlend = true;
+		var.key = "mesen_ntsc_vertical_blend";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				ntsc_verticalBlend = false;
+		}
+
+		bool ntsc_keepVerticalResolution = true;
+		var.key = "mesen_ntsc_keep_vertical_resolution";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				ntsc_keepVerticalResolution = false;
+		}
+
+		if (image_preset_default)
+			_console->GetSettings()->SetPictureSettings(0, 0, 0, 0, 0);
+		else
+			_console->GetSettings()->SetPictureSettings(brightness, contrast, saturation, hue, scanlines);
+
+		// bool ntsc_keepVerticalResolution = false;
+		// if ((set_filter_mode == FILTER_NTSC_BISQWIT_4X)			||
+		// 	(set_filter_mode == FILTER_NTSC_CUSTOM_BISQWIT_4X)	||
+		// 	(set_filter_mode == FILTER_NTSC_BISQWIT_8X)			||
+		// 	(set_filter_mode == FILTER_NTSC_CUSTOM_BISQWIT_8X))
+		// 	ntsc_keepVerticalResolution = true;
+
+		if (filter_raw_palette)
+			_console->GetSettings()->SetVideoFilterType(VideoFilterType::Raw);
+		else
+		{
+			if (set_filter_mode == FILTER_DISABLED)
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::None);
+			else if (set_filter_mode == FILTER_NTSC_COMPOSITE_BLARGG)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
+				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if (set_filter_mode == FILTER_NTSC_SVIDEO_BLARGG)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
+				_console->GetSettings()->SetNtscFilterSettings(-1.0, 0, -1.0, 0, 0.2, 0.2, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if (set_filter_mode == FILTER_NTSC_RGB_BLARGG)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
+				_console->GetSettings()->SetNtscFilterSettings(-1.0, -1.0, -1.0, 0, 0.7, 0.2, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if (set_filter_mode == FILTER_NTSC_MONOCHROME_BLARGG)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::NTSC);
+				_console->GetSettings()->SetNtscFilterSettings(-0.2, -0.1, -0.2, 0, 0.7, 0.2, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+
+				if (image_preset_default)
+					_console->GetSettings()->SetPictureSettings(0, 0, -1.0, 0, 0);
+				else
+					_console->GetSettings()->SetPictureSettings(brightness, contrast, -1.0, hue, scanlines);
+			}
+			else if (set_filter_mode == FILTER_NTSC_BISQWIT_2X)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscQuarterRes);
+				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if (set_filter_mode == FILTER_NTSC_BISQWIT_4X)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtscHalfRes);
+				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if (set_filter_mode == FILTER_NTSC_BISQWIT_8X)
+			{
+				_console->GetSettings()->SetVideoFilterType(VideoFilterType::BisqwitNtsc);
+				_console->GetSettings()->SetNtscFilterSettings(0, 0, 0, 0, 0, 0, false, 0, 0, 0, false, ntsc_keepVerticalResolution);
+			}
+			else if ((set_filter_mode == FILTER_NTSC_CUSTOM_BLARGG)		||
+				(set_filter_mode == FILTER_NTSC_CUSTOM_BISQWIT_2X)	||
+				(set_filter_mode == FILTER_NTSC_CUSTOM_BISQWIT_4X)	||
+				(set_filter_mode == FILTER_NTSC_CUSTOM_BISQWIT_8X))
+			{
+				_console->GetSettings()->SetNtscFilterSettings(
+					ntsc_artifacts,
+					ntsc_bleed,
+					ntsc_fringing,
+					ntsc_gamma,
+					ntsc_resolution,
+					ntsc_sharpness,
+					ntsc_mergeFields,
+					ntsc_yFilterLength,
+					ntsc_iFilterLength,
+					ntsc_qFilterLength,
+					ntsc_verticalBlend,
+					ntsc_keepVerticalResolution
+				);
 			}
 		}
 
-		_shiftButtonsClockwise = false;
-		if(readVariable(MesenShiftButtonsClockwise, var)) {
-			string value = string(var.value);
-			if(value == "enabled") {
-				_shiftButtonsClockwise = true;
- 			}
-		}
+		/* Audio - General */
 
-		if(readVariable(MesenAudioSampleRate, var)) {
+		var.key = "mesen_audio_sample_rate";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
 			int old_value = _audioSampleRate;
 
 			_audioSampleRate = atoi(var.value);
 			_audioSampleRate = (_audioSampleRate > 96000) ? 96000 : _audioSampleRate;
 
-			if(old_value != _audioSampleRate) {
+			if (old_value != _audioSampleRate)
+			{
 				_console->GetSettings()->SetSampleRate(_audioSampleRate);
 
 				// switch when core actively running
-				if(_saveStateSize != -1) {
+				if (_saveStateSize != -1)
+				{
 					struct retro_system_av_info system_av_info;
 					retro_get_system_av_info(&system_av_info);
-					env_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &system_av_info);
+					environ_cb(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &system_av_info);
 				}
 			}
+		}
+
+		var.key = "mesen_fake_stereo";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			AudioFilterSettings settings;
+			if (strcmp (var.value, "enabled") == 0)
+			{
+				settings.Filter = StereoFilter::Delay;
+				settings.Delay = 15;
+				_console->GetSettings()->SetAudioFilterSettings(settings);
+			}
+			else if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->SetAudioFilterSettings(settings);
+		}
+
+		var.key = "mesen_mute_triangle_ultrasonic";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::SilenceTriangleHighFreq);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::SilenceTriangleHighFreq);
+		}
+
+		var.key = "mesen_reduce_dmc_popping";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::ReduceDmcPopping);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::ReduceDmcPopping);
+		}
+
+		var.key = "mesen_swap_duty_cycle";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::SwapDutyCycles);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::SwapDutyCycles);
+		}
+
+		var.key = "mesen_disable_noise_mode_flag";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::DisableNoiseModeFlag);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::DisableNoiseModeFlag);
+		}
+
+		/* Input */
+
+		var.key = "mesen_controllerturbospeed";
+		var.value = NULL;
+		int turboSpeed = 0;
+		bool turboEnabled = true;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "Slow") == 0)
+				turboSpeed = 0;
+			else if (strcmp (var.value, "Normal") == 0)
+				turboSpeed = 1;
+			else if (strcmp (var.value, "Fast") == 0)
+				turboSpeed = 2;
+			else if (strcmp (var.value, "Very Fast") == 0)
+				turboSpeed = 3;
+			else if (strcmp (var.value, "Disabled") == 0)
+				turboEnabled = false;
+		}
+
+		var.key = "mesen_shift_buttons_clockwise";
+		var.value = NULL;
+		_shiftButtonsClockwise = false;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_shiftButtonsClockwise = false;
+			else if (strcmp (var.value, "enabled") == 0)
+				_shiftButtonsClockwise = true;
+		}
+
+		/* Emulation Hacks */
+
+		var.key = "mesen_nospritelimit";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "disabled") == 0)
+				_console->GetSettings()->ClearFlags(EmulationFlags::RemoveSpriteLimit);
+			else if (strcmp (var.value, "enabled") == 0)
+				_console->GetSettings()->SetFlags(EmulationFlags::RemoveSpriteLimit);
+		}
+
+		var.key = "mesen_overclock_type";
+		var.value = NULL;
+		bool beforeNmi = true;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "After NMI") == 0)
+				beforeNmi = false;
+			else if (strcmp (var.value, "Before NMI (Recommended)") == 0)
+				beforeNmi = true;
+		}
+
+		var.key = "mesen_overclock";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			int lineCount = 0;
+			if (strcmp (var.value, "None") == 0)
+				lineCount = 0;
+			else if (strcmp (var.value, "Low") == 0)
+				lineCount = 100;
+			else if (strcmp (var.value, "Medium") == 0)
+				lineCount = 250;
+			else if (strcmp (var.value, "High") == 0)
+				lineCount = 500;
+			else if (strcmp (var.value, "Very High") == 0)
+				lineCount = 1000;
+
+			if (beforeNmi)
+				_console->GetSettings()->SetPpuNmiConfig(lineCount, 0);
+			else
+				_console->GetSettings()->SetPpuNmiConfig(0, lineCount);
+		}
+
+		var.key = "mesen_ramstate";
+		var.value = NULL;
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var))
+		{
+			if (strcmp (var.value, "All 0s (Default)") == 0)
+				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllZeros);
+			else if (strcmp (var.value, "All 1s") == 0)
+				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::AllOnes);
+			else if (strcmp (var.value, "Random Values") == 0)
+				_console->GetSettings()->SetRamPowerOnState(RamPowerOnState::Random);
 		}
 
 		auto getKeyCode = [=](int port, int retroKey) {
@@ -662,7 +1181,9 @@ extern "C" {
 
 		retro_system_av_info avInfo = {};
 		_console->GetVideoRenderer()->GetSystemAudioVideoInfo(avInfo);
-		env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+		environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+
+		set_variable_visibility();
 	}
 
 	RETRO_API void retro_run()
@@ -680,10 +1201,13 @@ extern "C" {
 		}
 
 		bool updated = false;
-		if(env_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
+		if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) && updated) {
 			update_settings();
 
-			bool hdPacksEnabled = _console->GetSettings()->CheckFlag(EmulationFlags::UseHdPacks);
+		if (fps_mode_update)
+			update_fps_mode();
+
+		bool hdPacksEnabled = _console->GetSettings()->CheckFlag(EmulationFlags::UseHdPacks);
 			if(hdPacksEnabled != _hdPacksEnabled) {
 				//Try to load/unload HD pack when the flag is toggled
 				_console->UpdateHdPackMode();
@@ -697,7 +1221,7 @@ extern "C" {
 			//Update geometry after running the frame, in case the console's region changed (affects "auto" aspect ratio)
 			retro_system_av_info avInfo = {};
 			_console->GetVideoRenderer()->GetSystemAudioVideoInfo(avInfo);
-			env_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
+			environ_cb(RETRO_ENVIRONMENT_SET_GEOMETRY, &avInfo);
 		}
 
 		_console->GetSoundMixer()->UploadAudioSamples();
@@ -712,7 +1236,7 @@ extern "C" {
 	{
 		std::stringstream ss;
 		_console->GetSaveStateManager()->SaveState(ss);
-		
+
 		string saveStateData = ss.str();
 		memset(data, 0, size);
 		memcpy(data, saveStateData.c_str(), std::min(size, saveStateData.size()));
@@ -965,7 +1489,7 @@ extern "C" {
 		retro_input_descriptor end = { 0 };
 		desc.push_back(end);
 
-		env_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc.data());
+		environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc.data());
 	}
 
 	void update_core_controllers()
@@ -1031,7 +1555,7 @@ extern "C" {
 
 		_console->GetSettings()->SetFlagState(EmulationFlags::HasFourScore, hasFourScore);
 	}
-	
+
 	void retro_set_memory_maps()
 	{
 		//Expose internal RAM and work/save RAM for retroachievements
@@ -1052,7 +1576,7 @@ extern "C" {
 		memoryMap.descriptors = descriptors;
 		memoryMap.num_descriptors = count;
 
-		env_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &memoryMap);
+		environ_cb(RETRO_ENVIRONMENT_SET_MEMORY_MAPS, &memoryMap);
 	}
 
 	RETRO_API void retro_set_controller_port_device(unsigned port, unsigned device)
@@ -1068,15 +1592,15 @@ extern "C" {
 	{
 		char *saveFolder;
 		char *systemFolder;
-		if(!env_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &systemFolder) || !systemFolder)
+		if(!environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &systemFolder) || !systemFolder)
 			return false;
 
-		if(!env_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveFolder)) {
+		if(!environ_cb(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, &saveFolder)) {
 			logMessage(RETRO_LOG_ERROR, "Could not find save directory.\n");
 		}
 
 		enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
-		if(!env_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
+		if(!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt)) {
 			logMessage(RETRO_LOG_ERROR, "XRGB8888 is not supported.\n");
 			return false;
 		}
@@ -1089,6 +1613,7 @@ extern "C" {
 		FolderUtilities::SetFolderOverrides(saveFolder, "", "");
 
 		update_settings();
+		update_fps_mode();
 
 		//Plug in 2 standard controllers by default, game database will switch the controller types for recognized games
 		_console->GetSettings()->SetMasterVolume(10.0);
@@ -1102,7 +1627,7 @@ extern "C" {
 		const void *gameData = NULL;
 		size_t gameSize = 0;
 		string gamePath("");
-		if (env_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &gameExt)) {
+		if (environ_cb(RETRO_ENVIRONMENT_GET_GAME_INFO_EXT, &gameExt)) {
 			gameData = gameExt->data;
 			gameSize = gameExt->size;
 			if (gameExt->file_in_archive) {
@@ -1178,10 +1703,15 @@ extern "C" {
 
 	RETRO_API void retro_get_system_info(struct retro_system_info *info)
 	{
-		_mesenVersion = EmulationSettings::GetMesenVersionString();
-
 		info->library_name = "Mesen";
+
+		#ifndef GIT_VERSION
+		#define GIT_VERSION ""
+		#endif
+		_mesenVersion = EmulationSettings::GetMesenVersionString();
+		_mesenVersion.append(GIT_VERSION);
 		info->library_version = _mesenVersion.c_str();
+
 		// need_fullpath is required since HdPacks are
 		// identified via the rom file name
 		info->need_fullpath = true;
@@ -1200,7 +1730,7 @@ extern "C" {
 			case VideoFilterType::BisqwitNtsc: hscale = 8; break;
 			default: hscale = 1; break;
 		}
-		
+
 		shared_ptr<HdPackData> hdData = _console->GetHdData();
 		if(hdData) {
 			hscale = hdData->Scale;

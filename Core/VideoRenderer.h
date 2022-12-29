@@ -6,8 +6,19 @@
 #include "../Utilities/nes_ntsc.h"
 #include "../Libretro/libretro.h"
 
-#define NES_PAL_FPS  (838977920.0 / 16777215.0)
-#define NES_NTSC_FPS (1008307711.0 / 16777215.0)
+#define FPS_MESEN_NTSC		60.098811862348404716732985230828
+#define FPS_MESEN_PAL		50.006977968268290848936010226333
+#define FPS_FCEUMM_NTSC		(1008307711.0 / 16777215.0)
+#define FPS_FCEUMM_PAL		(838977920.0 / 16777215.0)
+#define FPS_INTEGER_NTSC	60.0
+#define FPS_INTEGER_PAL		50.0
+
+enum fps_mode {
+	FPS_MESEN,
+	FPS_FCEUMM,
+	FPS_INTEGER
+};
+static fps_mode set_fps_mode = FPS_MESEN;
 
 class VideoRenderer
 {
@@ -28,10 +39,20 @@ public:
 	~VideoRenderer() { }
 
 	void UpdateFrame(void *frameBuffer, uint32_t width, uint32_t height);
-	
-	void GetSystemAudioVideoInfo(retro_system_av_info &info, int32_t maxWidth = 0, int32_t maxHeight = 0)
+
+	void GetSystemAudioVideoInfo(retro_system_av_info &info, int32_t maxWidth = 0, int32_t maxHeight = 240)
 	{
-		info.timing.fps = _console->GetModel() == NesModel::NTSC ? NES_NTSC_FPS : NES_PAL_FPS;
+		_console->GetSettings()->ClearFlags(EmulationFlags::IntegerFpsMode);
+		if (set_fps_mode == FPS_INTEGER)
+			_console->GetSettings()->SetFlags(EmulationFlags::IntegerFpsMode);
+
+		if (set_fps_mode == FPS_MESEN)
+			info.timing.fps = _console->GetModel() == NesModel::NTSC ? FPS_MESEN_NTSC : FPS_MESEN_PAL;
+		else if (set_fps_mode == FPS_FCEUMM)
+			info.timing.fps = _console->GetModel() == NesModel::NTSC ? FPS_FCEUMM_NTSC : FPS_FCEUMM_PAL;
+		else if (set_fps_mode == FPS_INTEGER)
+			info.timing.fps = _console->GetModel() == NesModel::NTSC ? FPS_INTEGER_NTSC : FPS_INTEGER_PAL;
+
 		info.timing.sample_rate = _console->GetSettings()->GetSampleRate();
 
 		float ratio = (float)_console->GetSettings()->GetAspectRatio(_console);

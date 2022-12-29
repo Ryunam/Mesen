@@ -48,6 +48,11 @@ UTIL_DIR        += ../Utilities
 TARGET_NAME := mesen
 LIBM        = -lm
 
+GIT_VERSION := " $(shell git rev-parse --short HEAD || echo unknown)"
+ifneq ($(GIT_VERSION)," unknown")
+   CXXFLAGS += -DGIT_VERSION=\"$(GIT_VERSION)\"
+endif
+
 ifeq ($(ARCHFLAGS),)
 ifeq ($(arch),ppc)
    ARCHFLAGS = -arch ppc -arch ppc64
